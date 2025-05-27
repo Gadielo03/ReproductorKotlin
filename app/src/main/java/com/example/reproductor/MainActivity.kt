@@ -7,6 +7,7 @@ import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -59,16 +60,26 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import com.example.reproductor.models.MusicFile
+import com.example.reproductor.player.MusicPlayerManager
+import androidx.compose.runtime.collectAsState
 
 
 class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
     private lateinit var permissionManager: PermissionManager
     private val musicRepository = MusicFilesRepository()
+    private lateinit var musicPlayerManager: MusicPlayerManager
+    private lateinit var musicFiles: List<MusicFile>
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         permissionManager = PermissionManager(this)
         permissionManager.setPermissionCallback(this)
+        musicPlayerManager = MusicPlayerManager(application)
+        // Carga la lista y playlist solo una vez aquí
+        musicFiles = musicRepository.loadMusicFiles("/storage/emulated/0/Music/Samsung/")
+        musicPlayerManager.setPlaylist(musicFiles)
+
 
 
         if (!permissionManager.checkStoragePermission()) {
@@ -77,6 +88,7 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
         setContent {
             MusicPlayerTheme {
                 Surface {
+                    MusicPlayerObserver()
                     Column(
                         modifier = Modifier.fillMaxSize()
                     ) {
@@ -119,9 +131,15 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                                     bottom = 8.dp
                                 )
                         ) {
-                            val musicFiles = musicRepository.loadMusicFiles("/storage/emulated/0/Music/Samsung/")
-                            Log.d("MainActivity", "Se encontraron ${musicFiles.size} archivos de música")
-                            MusicFilesList(musicFiles = musicFiles)
+                            if (musicFiles.isNotEmpty()) {
+                                MusicFilesList(
+                                    musicFiles = musicFiles,
+                                    onMusicFileClick = { index ->
+                                        musicPlayerManager.loadSong(index)
+                                        musicPlayerManager.play()
+                                    }
+                                )
+                            }
                         }
 
                         // ControllersCard con DataCard integrado
@@ -131,11 +149,28 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                                 .padding(10.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            // Aquí pasas la información necesaria para ambas partes
+                            val isPlaying by musicPlayerManager.isPlaying.collectAsState()
+                            val currentSong by musicPlayerManager.currentSong
+                            val currentPosition by musicPlayerManager.currentPosition
+                            val duration by musicPlayerManager.duration
+                            val isRandom by musicPlayerManager.isRandomEnabled
+                            val isRepeat by musicPlayerManager.isRepeatEnabled
+
                             ControllersCard(
-                                title = "Nombre de la canción",
-                                artist = "Nombre del artista",
-                                // Otros parámetros como antes
+                                currentTime = formatDuration(currentPosition),
+                                totalTime = formatDuration(duration),
+                                isPlaying = isPlaying,
+                                isRandom = isRandom,
+                                isRepeat = isRepeat,
+                                bitmap = currentSong?.coverBitmap,
+                                title = currentSong?.name ?: "Selecciona una canción",
+                                artist = currentSong?.artist ?: "Artista desconocido",
+                                onPlayPause = { musicPlayerManager.togglePlayPause() },
+                                onNext = { musicPlayerManager.playNext() },
+                                onPrevious = { musicPlayerManager.playPrevious() },
+                                onRandom = { musicPlayerManager.toggleRandom() },
+                                onRepeat = { musicPlayerManager.toggleRepeat() },
+                                onSeek = { musicPlayerManager.setProgress(it) }
                             )
                         }
                     }
@@ -207,14 +242,15 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
 
     @Composable
     fun ControllersCard(
+        // Elimina la evaluación directa en los valores por defecto
         currentTime: String = "0:00",
-        totalTime: String = "3:45",
+        totalTime: String = "0:00",
         isPlaying: Boolean = false,
         isRandom: Boolean = false,
         isRepeat: Boolean = false,
         bitmap: android.graphics.Bitmap? = null,
-        title: String = "Título",
-        artist: String = "Artista",
+        title: String = "Selecciona una canción",
+        artist: String = "Artista desconocido",
         onPlayPause: () -> Unit = {},
         onNext: () -> Unit = {},
         onPrevious: () -> Unit = {},
@@ -271,9 +307,8 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                     // Slider
                     var sliderPosition by remember { mutableStateOf(0f) }
                     Slider(
-                        value = sliderPosition,
+                        value = musicPlayerManager.getProgress(),  // Esto puede ser un problema
                         onValueChange = {
-                            sliderPosition = it
                             onSeek(it)
                         },
                         modifier = Modifier
@@ -307,7 +342,7 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                     // Botón Random
                     IconButton(onClick = onRandom) {
                         Icon(
-                            painter = painterResource(id = R.drawable.ic_launcher_background),
+                            painter = painterResource(id = R.drawable.baseline_auto_awesome_24),
                             contentDescription = "Reproducción aleatoria",
                             tint = if (isRandom) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSecondaryContainer
                         )
@@ -316,7 +351,7 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                     // Botón Previous
                     IconButton(onClick = onPrevious) {
                         Icon(
-                            painter = painterResource(id = R.drawable.ic_launcher_background),
+                            painter = painterResource(id = R.drawable.baseline_skip_previous_24),
                             contentDescription = "Anterior",
                             tint = MaterialTheme.colorScheme.onSecondaryContainer
                         )
@@ -334,7 +369,7 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                     ) {
                         Icon(
                             painter = painterResource(
-                                id = if (isPlaying) R.drawable.ic_launcher_background else R.drawable.ic_launcher_background
+                                id = if (isPlaying) R.drawable.baseline_pause_24 else R.drawable.baseline_play_arrow_24
                             ),
                             contentDescription = if (isPlaying) "Pausar" else "Reproducir",
                             tint = MaterialTheme.colorScheme.onSecondary
@@ -344,7 +379,7 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                     // Botón Next
                     IconButton(onClick = onNext) {
                         Icon(
-                            painter = painterResource(id = R.drawable.ic_launcher_background),
+                            painter = painterResource(id = R.drawable.baseline_skip_next_24),
                             contentDescription = "Siguiente",
                             tint = MaterialTheme.colorScheme.onSecondaryContainer
                         )
@@ -353,7 +388,7 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                     // Botón Repeat
                     IconButton(onClick = onRepeat) {
                         Icon(
-                            painter = painterResource(id = R.drawable.ic_launcher_background),
+                            painter = painterResource(id = R.drawable.baseline_repeat_24),
                             contentDescription = "Repetir",
                             tint = if (isRepeat) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSecondaryContainer
                         )
@@ -431,17 +466,21 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
     @Composable
     fun MusicFilesList(
         musicFiles: List<MusicFile>,
+        onMusicFileClick: (Int) -> Unit,
         modifier: Modifier = Modifier
     ) {
         LazyColumn(
-            modifier = modifier
-                .fillMaxSize() // Ocupa todo el espacio disponible
+            modifier = modifier.fillMaxSize()
         ) {
             items(
                 items = musicFiles,
-                key = { it.path } // Usamos el path como clave única
+                key = { it.path }
             ) { musicFile ->
-                MusicFileItem(musicFile = musicFile)
+                val index = musicFiles.indexOf(musicFile)
+                MusicFileItem(
+                    musicFile = musicFile,
+                    onClick = { onMusicFileClick(index) }
+                )
                 Divider(
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f),
                     thickness = 1.dp,
@@ -452,11 +491,12 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
     }
 
     @Composable
-    fun MusicFileItem(musicFile: MusicFile) {
+    fun MusicFileItem(musicFile: MusicFile,onClick: () -> Unit = {}) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 8.dp),
+                .padding(vertical = 8.dp)
+                .clickable { onClick() },
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Imagen de portada
@@ -526,6 +566,18 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
         val minutes = totalSeconds / 60
         val seconds = totalSeconds % 60
         return String.format("%d:%02d", minutes, seconds)
+    }
+
+    @Composable
+    fun MusicPlayerObserver() {
+        val _currentPosition by musicPlayerManager.currentPosition
+        val _isPlaying by musicPlayerManager.isPlaying.collectAsState()
+        val _currentSong by musicPlayerManager.currentSong
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        musicPlayerManager.release()
     }
 
 }
