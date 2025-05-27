@@ -12,8 +12,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
+import android.content.Context
+import android.content.Intent
+import android.media.AudioManager
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,6 +32,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -62,13 +64,19 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.example.reproductor.models.MusicFile
 import com.example.reproductor.player.MusicPlayerManager
 import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.graphics.ColorFilter
 
 
 class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
     private lateinit var permissionManager: PermissionManager
     private val musicRepository = MusicFilesRepository()
     private lateinit var musicPlayerManager: MusicPlayerManager
-    private lateinit var musicFiles: List<MusicFile>
+    private val audioManager by lazy { getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+    private val maxVolume get() = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+    private val currentVolume get() = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+    private var musicFiles by mutableStateOf<List<MusicFile>>(emptyList())
+
+    private val REQUEST_CODE_PICK_FOLDER = 1001
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -76,10 +84,7 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
         permissionManager = PermissionManager(this)
         permissionManager.setPermissionCallback(this)
         musicPlayerManager = MusicPlayerManager(application)
-        // Carga la lista y playlist solo una vez aquí
-        musicFiles = musicRepository.loadMusicFiles("/storage/emulated/0/Music/Samsung/")
-        musicPlayerManager.setPlaylist(musicFiles)
-
+        loadFiles()
 
 
         if (!permissionManager.checkStoragePermission()) {
@@ -106,9 +111,9 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                         ) {
                             // Título a la izquierda
                             Text(
-                                text = "Mi Reproductor",
+                                text = "Reproductor Kotlin",
                                 style = TextStyle(
-                                    fontSize = 20.sp,
+                                    fontSize = 30.sp,
                                     fontWeight = FontWeight.Bold
                                 ),
                                 color = MaterialTheme.colorScheme.primary,
@@ -155,6 +160,7 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                             val duration by musicPlayerManager.duration
                             val isRandom by musicPlayerManager.isRandomEnabled
                             val isRepeat by musicPlayerManager.isRepeatEnabled
+                            val (volume, setVolume) = rememberVolumeState()
 
                             ControllersCard(
                                 currentTime = formatDuration(currentPosition),
@@ -170,7 +176,9 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                                 onPrevious = { musicPlayerManager.playPrevious() },
                                 onRandom = { musicPlayerManager.toggleRandom() },
                                 onRepeat = { musicPlayerManager.toggleRepeat() },
-                                onSeek = { musicPlayerManager.setProgress(it) }
+                                onSeek = { musicPlayerManager.setProgress(it) },
+                                volume = volume,
+                                onVolumeChange = setVolume
                             )
                         }
                     }
@@ -179,7 +187,17 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
         }
     }
 
-
+    fun loadFiles() {
+        try {
+            musicFiles = musicRepository.loadMusicFiles(getMusicFolderPath())
+            musicPlayerManager.setPlaylist(musicFiles)
+            Log.d("MainActivity", "Archivos de música cargados: ${musicFiles.size}")
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error al cargar archivos de música: ${e.message}")
+            e.printStackTrace()
+            musicFiles = emptyList()
+        }
+    }
 
     override fun onPermissionGranted() {
         Toast.makeText(this, "Permiso concedido", Toast.LENGTH_SHORT).show()
@@ -229,18 +247,26 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                 onDismissRequest = { expanded = false }
             ) {
                 DropdownMenuItem(
-                    text = { PrimaryColorText("Opcion1", 16) },
-                    onClick = { /* Do something... */ }
-                )
-                DropdownMenuItem(
-                    text = { SecondaryColorText("Opcion2", 14) },
-                    onClick = { /* Do something... */ }
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.baseline_folder_24),
+                                contentDescription = "Carpeta",
+                                modifier = Modifier.padding(end = 8.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            PrimaryColorText("Cambiar Carpeta de música", 16)
+                        }
+                    },
+                    onClick = {openFolderPicker() }
                 )
             }
         }
     }
 
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
+
     fun ControllersCard(
         // Elimina la evaluación directa en los valores por defecto
         currentTime: String = "0:00",
@@ -256,7 +282,9 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
         onPrevious: () -> Unit = {},
         onRandom: () -> Unit = {},
         onRepeat: () -> Unit = {},
-        onSeek: (Float) -> Unit = {}
+        onSeek: (Float) -> Unit = {},
+        volume: Float,
+        onVolumeChange: (Float) -> Unit,
     ) {
         Card(
             colors = CardDefaults.cardColors(
@@ -264,7 +292,7 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
             ),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(180.dp) // Aumentar un poco la altura para acomodar ambos elementos
+                .height(220.dp) // Aumentar un poco la altura para acomodar ambos elementos
                 .padding(
                     start = 16.dp,
                     end = 16.dp,
@@ -292,7 +320,13 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(0.2f), // 20% para el slider
+                        .weight(0.2f)
+                        .padding(
+                            start = 0.dp,
+                            end = 0.dp,
+                            top = 10.dp,
+                            bottom = 0.dp
+                        ), // 20% para el slider
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // Tiempo actual
@@ -335,7 +369,13 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(0.4f), // 40% para los botones
+                        .weight(0.4f)
+                        .padding(
+                            start = 0.dp,
+                            end = 0.dp,
+                            top = 10.dp,
+                            bottom = 0.dp
+                        ), // 40% para los botones
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -394,6 +434,38 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                         )
                     }
                 }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.baseline_volume_up_24),
+                        contentDescription = "Volumen",
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Slider(
+                        value = volume,
+                        onValueChange = onVolumeChange,
+                        valueRange = 0f..1f,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 4.dp),
+                        colors = SliderDefaults.colors(
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary,
+                            inactiveTrackColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.3f)
+                        ),
+                        thumb = {
+                            androidx.compose.material3.SliderDefaults.Thumb(
+                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                thumbSize = androidx.compose.ui.unit.DpSize(12.dp, 12.dp)
+                            )
+                        }
+                    )
+                }
             }
         }
     }
@@ -425,10 +497,12 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                     )
                 } else {
                     Image(
-                        painter = painterResource(id = R.drawable.ic_launcher_background),
+                        painter = painterResource(id = R.drawable.baseline_library_music_24),
                         contentDescription = "Música",
                         contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.fillMaxSize(),
+                        colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.primary)
+
                     )
                 }
             }
@@ -516,10 +590,12 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
                 } else {
                     // Imagen por defecto si no hay portada
                     Image(
-                        painter = painterResource(id = R.drawable.ic_launcher_background),
+                        painter = painterResource(id = R.drawable.baseline_library_music_24),
                         contentDescription = "Sin portada",
                         contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.fillMaxSize(),
+                        colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.primary)
+
                     )
                 }
             }
@@ -575,11 +651,57 @@ class MainActivity : AppCompatActivity(), PermissionManager.PermissionCallback {
         val _currentSong by musicPlayerManager.currentSong
     }
 
+    @Composable
+    fun rememberVolumeState(): Pair<Float, (Float) -> Unit> {
+        val volume = remember { mutableStateOf(currentVolume.toFloat() / maxVolume) }
+        val setVolume: (Float) -> Unit = { v ->
+            val newVol = (v * maxVolume).toInt().coerceIn(0, maxVolume)
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVol, 0)
+            volume.value = newVol.toFloat() / maxVolume
+        }
+        return Pair(volume.value, setVolume)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         musicPlayerManager.release()
     }
 
+    private fun getMusicFolderPath(): String {
+        val sharedPrefs = getSharedPreferences("MusicPlayerPrefs", Context.MODE_PRIVATE)
+        return sharedPrefs.getString("musicFolderPath", "/storage/emulated/0/Music/Samsung/") ?: "/storage/emulated/0/Music/Samsung/"
+    }
+
+    fun saveMusicFolderPath(path: String) {
+        val sharedPrefs = getSharedPreferences("MusicPlayerPrefs", Context.MODE_PRIVATE)
+        sharedPrefs.edit().putString("musicFolderPath", path).apply()
+    }
+
+    fun openFolderPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+        intent.addCategory(Intent.CATEGORY_DEFAULT)
+        startActivityForResult(intent, REQUEST_CODE_PICK_FOLDER)
+    }
+
+    // Maneja el resultado del selector
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_CODE_PICK_FOLDER && resultCode == RESULT_OK) {
+            val uri = data?.data ?: return
+            val path = getFullPathFromTreeUri(uri) ?: return
+            saveMusicFolderPath(path)
+            loadFiles()
+        }
+    }
+
+    fun getFullPathFromTreeUri(uri: android.net.Uri): String? {
+        val docId = android.provider.DocumentsContract.getTreeDocumentId(uri)
+        val parts = docId.split(":")
+        if (parts.size == 2 && parts[0] == "primary") {
+            return "/storage/emulated/0/" + parts[1]
+        }
+        return null // Para SD o almacenamiento externo, se requiere lógica adicional
+    }
 }
 
 
